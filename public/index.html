@@ -115,7 +115,12 @@ h1 small{font-size:.45em;font-weight:500;color:var(--muted);margin-left:6px}
       <div class="eyebrow" id="stageName">Easy · 9 blanks</div>
       <h1 id="levelTitle">Level 1<small>/ 160</small></h1>
     </div>
-    <button class="iconbtn" id="mapBtn" type="button">Levels</button>
+    <div style="display:flex;gap:8px">
+      <button class="iconbtn" id="soundBtn" type="button" aria-pressed="true" aria-label="Sound on">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M11 5 6 9H3v6h3l5 4z"/><path id="soundWaves" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path id="soundX" d="M16 9l6 6M22 9l-6 6" hidden/></svg>
+      </button>
+      <button class="iconbtn" id="mapBtn" type="button">Levels</button>
+    </div>
   </header>
   <div>
     <div class="trail" id="trail"></div>
@@ -162,6 +167,47 @@ const store = {
   get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},
   set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 };
+
+/* ---- sound: synthesized with Web Audio, no files ---- */
+const SFX = (()=>{
+  let ctx=null, master=null, on=store.get("sdk_sound", true);
+  const PENTA=[523.25,587.33,659.25,783.99,880,1046.5,1174.66,1318.51,1567.98]; // C major pentatonic, digit 1-9
+  function ac(){
+    if(!on) return null;
+    try{
+      if(!ctx){const A=window.AudioContext||window.webkitAudioContext; if(!A) return null;
+        ctx=new A(); master=ctx.createGain(); master.gain.value=.7; master.connect(ctx.destination);}
+      if(ctx.state==="suspended") ctx.resume();
+      return ctx;
+    }catch(e){return null}
+  }
+  function tone(freq, t0, dur, {type="sine", vol=.12, slide=0, attack=.005}={}){
+    const c=ac(); if(!c) return;
+    const t=c.currentTime+t0, o=c.createOscillator(), g=c.createGain();
+    o.type=type; o.frequency.setValueAtTime(freq,t);
+    if(slide) o.frequency.exponentialRampToValueAtTime(freq*slide,t+dur);
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(vol,t+attack); g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+.02);
+  }
+  return {
+    get on(){return on},
+    toggle(){on=!on; store.set("sdk_sound",on); if(on) this.place(5); return on},
+    place(n){tone(PENTA[n-1],0,.16,{type:"triangle",vol:.11}); tone(PENTA[n-1]*2,0,.08,{vol:.03})},
+    note(){tone(1760,0,.05,{vol:.05})},
+    erase(){tone(330,0,.12,{type:"triangle",vol:.08,slide:.6})},
+    bad(){tone(150,0,.22,{type:"square",vol:.045,slide:.8}); tone(155,.0,.22,{type:"sawtooth",vol:.02,slide:.8})},
+    clear(n){ // 1 = row/col/box, 2 = double, 3 = triple
+      const seq = n===3 ? [0,2,4,5,7,9,12,16] : n===2 ? [0,4,7,12,16] : [0,4,7,12];
+      const base = 523.25, gap = n===3 ? .06 : .075;
+      seq.forEach((st,k)=>{const f=base*Math.pow(2,st/12); tone(f,.06+k*gap,.35,{type:"triangle",vol:.09}); tone(f*2,.06+k*gap,.18,{vol:.025})});
+      if(n>=2){const end=.06+seq.length*gap; [0,7,12].forEach(st=>tone(base*2*Math.pow(2,st/12),end,.9,{vol:.05,attack:.02}))}
+    },
+    win(){
+      [[0,0],[4,.12],[7,.24],[12,.36]].forEach(([st,t])=>tone(392*Math.pow(2,st/12),t,.3,{type:"triangle",vol:.1}));
+      [0,4,7,12].forEach(st=>tone(392*2*Math.pow(2,st/12),.52,1.4,{type:"triangle",vol:.06,attack:.03}));
+    }
+  };
+})();
 
 let S;
 function fresh(idx){
@@ -246,12 +292,17 @@ function input(n){
     }
   }
   render(i);
+  if(S.notesMode) SFX.note();
+  else if(!S.grid[i]) SFX.erase();
+  else if([...PEERS[i]].some(j=>S.grid[j]===S.grid[i])) SFX.bad();
+  else { SFX.place(n); if(fx.length) SFX.clear(fx.length); }
   if(fx.length) playClear(i, fx);
   check(fx.length);
 }
 function erase(){const i=S.sel;if(i<0||LEVELS[S.idx].p[i]!=="0")return;
-  S.history.push({i,v:S.grid[i],notes:[...S.notes[i]]});S.grid[i]=0;S.notes[i]=[];render();}
-function undo(){const h=S.history.pop();if(!h)return;S.grid[h.i]=h.v;S.notes[h.i]=h.notes;S.sel=h.i;render();}
+  if(!S.grid[i]&&!S.notes[i].length)return;
+  S.history.push({i,v:S.grid[i],notes:[...S.notes[i]]});S.grid[i]=0;S.notes[i]=[];render();SFX.erase();}
+function undo(){const h=S.history.pop();if(!h)return;S.grid[h.i]=h.v;S.notes[h.i]=h.notes;S.sel=h.i;render();SFX.erase();}
 
 function check(hadFx){
   if(S.grid.join("")!==LEVELS[S.idx].s) return;
@@ -263,7 +314,7 @@ function check(hadFx){
   if(next>=160) msg = "Every puzzle solved. You own this island.";
   $("winText").textContent=msg;
   $("nextBtn").textContent = next>=160 ? "Play again from Level 1" : "Next level";
-  setTimeout(()=>{$("win").hidden=false;$("nextBtn").focus()}, hadFx?1100:350);
+  setTimeout(()=>{$("win").hidden=false;$("nextBtn").focus();SFX.win()}, hadFx?1100:350);
 }
 function go(idx){S={...fresh(idx),unlocked:S.unlocked};$("win").hidden=true;$("map").hidden=true;render();}
 
@@ -312,6 +363,9 @@ function openMap(){
 
 $("notesBtn").onclick=()=>{S.notesMode=!S.notesMode;render()};
 $("eraseBtn").onclick=erase; $("undoBtn").onclick=undo;
+function paintSound(){const on=SFX.on;$("soundBtn").setAttribute("aria-pressed",on);$("soundBtn").setAttribute("aria-label",on?"Sound on":"Sound off");
+  $("soundWaves").toggleAttribute("hidden",!on);$("soundX").toggleAttribute("hidden",on);}
+$("soundBtn").onclick=()=>{SFX.toggle();paintSound()}; paintSound();
 $("nextBtn").onclick=()=>go(S.idx+1>=160?0:S.idx+1);
 $("mapBtn").onclick=openMap; $("mapClose").onclick=()=>{$("map").hidden=true};
 $("map").addEventListener("click",e=>{if(e.target.id==="map")$("map").hidden=true});
