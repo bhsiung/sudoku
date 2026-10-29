@@ -55,6 +55,19 @@ h1 small{font-size:.45em;font-weight:500;color:var(--muted);margin-left:6px}
 @keyframes flashgood{0%,100%{color:inherit}30%{color:var(--stage);transform:scale(1.15)}}
 
 .stage-wrap{position:relative}
+/* paused: hide the puzzle completely, then blur for the frosted look */
+.app.paused .board,.app.paused .pad,.app.paused .tools,.app.paused .fx{filter:blur(10px);pointer-events:none;user-select:none}
+.app.paused .cell{color:transparent!important;background:var(--surface)!important;box-shadow:none!important}
+.app.paused .notes,.app.paused .key{color:transparent}
+.app.paused .key small{visibility:hidden}
+.pausecover{position:absolute;inset:0;display:grid;place-items:center;z-index:5}
+.pausecard{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px 30px;display:flex;flex-direction:column;align-items:center;gap:6px;
+  box-shadow:0 10px 40px color-mix(in srgb,var(--ink) 18%,transparent);text-align:center}
+.pausecard b{font-family:var(--f-display);font-weight:800;font-size:28px;line-height:1}
+.pausecard span{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;margin-bottom:8px}
+.pausecard .primary{padding:12px 36px}
+.iconbtn[aria-pressed="true"].pz{background:var(--stage);border-color:var(--stage);color:var(--surface)}
+.iconbtn:disabled{opacity:.35;cursor:default}
 .board{display:grid;grid-template-columns:repeat(9,1fr);aspect-ratio:1;max-width:100%;background:var(--surface);
   border:2px solid var(--line-strong);border-radius:6px;overflow:hidden;user-select:none;-webkit-user-select:none}
 .cell{position:relative;display:grid;place-items:center;border-right:1px solid var(--line);border-bottom:1px solid var(--line);
@@ -157,6 +170,9 @@ h1 small{font-size:.45em;font-weight:500;color:var(--muted);margin-left:6px}
       <h1 id="levelTitle">Level 1<small>/ 160</small></h1>
     </div>
     <div style="display:flex;gap:8px">
+      <button class="iconbtn pz" id="pauseBtn" type="button" aria-pressed="false" aria-label="Pause">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-3px" aria-hidden="true"><g id="pauseIcon"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></g><path id="playIcon" d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z" hidden/></svg>
+      </button>
       <button class="iconbtn" id="soundBtn" type="button" aria-pressed="true" aria-label="Sound on">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M11 5 6 9H3v6h3l5 4z"/><path id="soundWaves" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path id="soundX" d="M16 9l6 6M22 9l-6 6" hidden/></svg>
       </button>
@@ -177,6 +193,13 @@ h1 small{font-size:.45em;font-weight:500;color:var(--muted);margin-left:6px}
     <div class="board" id="board" role="grid" aria-label="Sudoku board"></div>
     <div class="fx" id="fx" aria-hidden="true"></div>
     <div id="callouts" aria-live="polite"></div>
+    <div class="pausecover" id="pauseCover" hidden>
+      <div class="pausecard" role="dialog" aria-label="Game paused">
+        <b>Paused</b>
+        <span id="pauseTime">Clock stopped at 0:00</span>
+        <button class="primary" id="resumeBtn" type="button">Resume</button>
+      </div>
+    </div>
   </div>
   <div class="tools">
     <button class="tool" id="notesBtn" type="button" aria-pressed="false">Notes</button>
@@ -309,7 +332,7 @@ const SFX = (()=>{
 let S, runFrom=null;
 function fresh(idx){
   return {idx, grid:[...LEVELS[idx].p].map(Number), notes:Array.from({length:81},()=>[]), sel:-1, notesMode:false, history:[],
-          elapsed:0, scored:Array(27).fill(false), clearPts:0, mistakes:0, combos:[0,0,0,0], done:false, result:null};
+          elapsed:0, scored:Array(27).fill(false), clearPts:0, mistakes:0, combos:[0,0,0,0], done:false, result:null, paused:false};
 }
 function migrate(s){ // state saved by the pre-scoring version
   if(s.scored) return s;
@@ -325,14 +348,14 @@ function start(data){
   buildBoard(); buildPad(); render();
   if(S.done && S.result) showWin(S.result, false);
   else if(S.grid.join("")===LEVELS[S.idx].s) go(Math.min(S.idx+1,159));
-  else resume();
+  else if(!S.paused) resume();
   setInterval(tick, 250);
 }
 function save(){ store.set("sdk_state", S); store.set("sdk_unlocked", S.unlocked); }
 
 /* ---- timer: runs only while the board is visible and in play ---- */
 const elapsed = () => S.elapsed + (runFrom ? Date.now()-runFrom : 0);
-function resume(){ if(!runFrom && S && !S.done && document.visibilityState==="visible" && $("map").hidden && $("info").hidden) runFrom=Date.now(); }
+function resume(){ if(!runFrom && S && !S.done && !S.paused && document.visibilityState==="visible" && $("map").hidden && $("info").hidden) runFrom=Date.now(); }
 function pause(){ if(runFrom){ S.elapsed += Date.now()-runFrom; runFrom=null; save(); } }
 function tick(){
   if(!S) return;
@@ -340,8 +363,15 @@ function tick(){
   t.textContent=fmt(ms);
   t.classList.toggle("over", ms/1000 > targetOf(S.idx));
 }
-document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"?resume():pause());
-window.addEventListener("pagehide", pause);
+function setPaused(v){
+  if(!S || S.done) v=false;
+  S.paused=!!v;
+  if(S.paused) pause(); else resume();
+  render();
+}
+// leaving the app pauses (and hides) the board; coming back needs a tap on Resume
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState!=="visible") setPaused(true); });
+window.addEventListener("pagehide",()=>setPaused(true));
 
 function conflicts(){
   const bad=new Set();
@@ -353,7 +383,7 @@ function buildBoard(){
   const b=$("board"), f=$("fx"); b.innerHTML=""; f.innerHTML="";
   for(let i=0;i<81;i++){
     const d=document.createElement("div");d.className="cell";d.setAttribute("role","gridcell");d.dataset.i=i;
-    d.addEventListener("click",()=>{S.sel=i;render()}); b.appendChild(d);
+    d.addEventListener("click",()=>{if(S.paused)return;S.sel=i;render()}); b.appendChild(d);
     f.appendChild(document.createElement("div"));
   }
 }
@@ -389,7 +419,7 @@ function playClear(origin, units, pts){
 
 /* ---- input ---- */
 function input(n){
-  const i=S.sel; if(i<0 || S.done) return;
+  const i=S.sel; if(i<0 || S.done || S.paused) return;
   if(LEVELS[S.idx].p[i]!=="0") return;
   if(S.notesMode && S.grid[i]) return;
   resume();
@@ -418,12 +448,12 @@ function input(n){
   check(newUnits.length);
 }
 function erase(){
-  const i=S.sel; if(i<0||S.done||LEVELS[S.idx].p[i]!=="0") return;
+  const i=S.sel; if(i<0||S.done||S.paused||LEVELS[S.idx].p[i]!=="0") return;
   if(!S.grid[i]&&!S.notes[i].length) return;
   S.history.push({i,v:S.grid[i],notes:[...S.notes[i]]}); S.grid[i]=0; S.notes[i]=[]; render(); SFX.erase();
 }
 function undo(){
-  if(S.done) return;
+  if(S.done||S.paused) return;
   const h=S.history.pop(); if(!h) return;
   S.grid[h.i]=h.v; S.notes[h.i]=h.notes; S.sel=h.i; render(); SFX.erase();
 }
@@ -513,6 +543,12 @@ function render(popIdx){
   const cnt=Array(10).fill(0); S.grid.forEach(v=>cnt[v]++);
   for(const k of $("pad").children){const n=+k.dataset.n;const left=9-cnt[n];k.querySelector("small").textContent=left>0?left:"✓";k.classList.toggle("done",left<=0)}
   $("notesBtn").setAttribute("aria-pressed",S.notesMode);
+  const pz=!!S.paused;
+  $("app").classList.toggle("paused",pz); $("pauseCover").hidden=!pz;
+  $("pauseBtn").setAttribute("aria-pressed",pz); $("pauseBtn").setAttribute("aria-label",pz?"Resume":"Pause"); $("pauseBtn").disabled=!!S.done;
+  $("pauseIcon").toggleAttribute("hidden",pz); $("playIcon").toggleAttribute("hidden",!pz);
+  $("pauseTime").textContent=`Clock stopped at ${fmt(elapsed())}`;
+  if(pz) $("hint").textContent="Paused. The board is hidden until you resume.";
   $("hint").textContent = S.notesMode ? "Notes mode: numbers go in as small pencil marks." : (bad.size ? "Red cells repeat a number in the same row, column, or box." : "Tap a cell, then tap a number.");
   save();
 }
@@ -560,7 +596,9 @@ function openInfo(i){
 function closeInfo(){ $("info").hidden=true; render(); }
 
 /* ---- wiring ---- */
-$("notesBtn").onclick=()=>{S.notesMode=!S.notesMode;render()};
+$("notesBtn").onclick=()=>{if(S.paused)return;S.notesMode=!S.notesMode;render()};
+$("pauseBtn").onclick=()=>setPaused(!S.paused);
+$("resumeBtn").onclick=()=>setPaused(false);
 $("eraseBtn").onclick=erase; $("undoBtn").onclick=undo;
 $("nextBtn").onclick=()=>go(S.idx+1>=160?0:S.idx+1);
 $("retryBtn").onclick=()=>go(S.idx);
@@ -575,6 +613,8 @@ document.addEventListener("keydown",e=>{
   if(!$("info").hidden){if(e.key==="Escape")closeInfo();return}
   if(!$("map").hidden){if(e.key==="Escape")closeMap();return}
   if(!$("win").hidden) return;
+  if(e.key==="p"||e.key==="P"||e.key===" "||(S.paused&&e.key==="Enter")){e.preventDefault();setPaused(!S.paused);return}
+  if(S.paused) return;
   if(e.key>="1"&&e.key<="9") input(+e.key);
   else if(e.key==="Backspace"||e.key==="Delete"||e.key==="0") erase();
   else if(e.key==="n"||e.key==="N"){S.notesMode=!S.notesMode;render()}
